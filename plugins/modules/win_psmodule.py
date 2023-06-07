@@ -83,12 +83,18 @@ options:
     required: no
     default: false
     version_added: '1.11.0'
-  url:
+  force:
     description:
-      - URL of the custom repository to register.
-      - DEPRECATED, will be removed in a major release after C(2021-07-01), please use the
-        M(community.windows.win_psrepository) module instead.
-    type: str
+      - Overrides warning messages about module installation conflicts
+      - If there is an existing module with the same name and version, force overwrites that version
+      - Corresponds to the C(-Force) parameter of C(Install-Module).
+      - >-
+        If module as dependency, it will also force reinstallation of dependency.
+        Updating them to latest if version isn't specified in module manifest.
+    type: bool
+    required: no
+    default: false
+    version_added: '1.13.0'
 notes:
   - PowerShell modules needed
       - PowerShellGet >= 1.6.0

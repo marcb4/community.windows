@@ -10,6 +10,10 @@ module: win_domain_object_info
 short_description: Gather information an Active Directory object
 description:
 - Gather information about multiple Active Directory object(s).
+deprecated:
+  removed_in: 3.0.0
+  why: This module has been moved into the C(microsoft.ad) collection.
+  alternative: Use the M(microsoft.ad.object_info) module instead.
 options:
   domain_password:
     description:
@@ -85,6 +89,7 @@ notes:
 - The C(sAMAccountType_AnsibleFlags) and C(userAccountControl_AnsibleFlags) return property is something set by the
   module itself as an easy way to view what those flags represent. These properties cannot be used as part of the
   I(filter) or I(ldap_filter) and are automatically added if those properties were requested.
+- This must be run on a host that has the ActiveDirectory powershell module installed.
 author:
 - Jordan Borean (@jborean93)
 '''

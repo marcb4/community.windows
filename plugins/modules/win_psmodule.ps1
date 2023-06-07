@@ -18,12 +18,12 @@ $maximum_version = Get-AnsibleParam -obj $params -name "maximum_version" -type "
 $repo = Get-AnsibleParam -obj $params -name "repository" -type "str"
 $repo_user = Get-AnsibleParam -obj $params -name "username" -type "str"
 $repo_pass = Get-AnsibleParam -obj $params -name "password" -type "str"
-$url = Get-AnsibleParam -obj $params -name "url" -type str
 $state = Get-AnsibleParam -obj $params -name "state" -type "str" -default "present" -validateset "present", "absent", "latest"
 $allow_clobber = Get-AnsibleParam -obj $params -name "allow_clobber" -type "bool" -default $false
 $skip_publisher_check = Get-AnsibleParam -obj $params -name "skip_publisher_check" -type "bool" -default $false
 $allow_prerelease = Get-AnsibleParam -obj $params -name "allow_prerelease" -type "bool" -default $false
 $accept_license = Get-AnsibleParam -obj $params -name "accept_license" -type "bool" -default $false
+$force = Get-AnsibleParam -obj $params -name "force" -type "bool" -default $false
 
 $result = @{changed = $false
     output = ""
@@ -229,7 +229,8 @@ Function Install-PsModule {
         [Bool]$SkipPublisherCheck,
         [Bool]$AllowPrerelease,
         [Bool]$CheckMode,
-        [Bool]$AcceptLicense
+        [Bool]$AcceptLicense,
+        [Bool]$Force
     )
 
     $getParams = @{
@@ -247,14 +248,26 @@ Function Install-PsModule {
 
             $ht = @{
                 Name = $Name
-                WhatIf = $CheckMode
-                Force = $true
-                AcceptLicense = $AcceptLicense
             }
 
             [String[]]$ParametersNames = @("RequiredVersion", "MinimumVersion", "MaximumVersion", "AllowPrerelease",
-                "AllowClobber", "SkipPublisherCheck", "Repository", "Credential")
+                "Repository", "Credential")
+            $ht = Add-DefinedParameter -Hashtable $ht -ParametersNames $ParametersNames
 
+            # When module require License Acceptance, `-Force` is mandatory to skip interactive prompt
+            if ((Find-Module @ht).AdditionalMetadata.requireLicenseAcceptance) {
+                $ht["Force"] = $true
+            }
+            else {
+                $ht["Force"] = $Force
+            }
+
+            $ht = $ht + @{
+                WhatIf = $CheckMode
+                AcceptLicense = $AcceptLicense
+            }
+
+            [String[]]$ParametersNames = @("AllowClobber", "SkipPublisherCheck")
             $ht = Add-DefinedParameter -Hashtable $ht -ParametersNames $ParametersNames
 
             Install-Module @ht -ErrorVariable ErrorDetails | Out-Null
@@ -349,82 +362,6 @@ Function Find-LatestPsModule {
     $LatestModuleVersion
 }
 
-Function Install-Repository {
-    Param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name,
-        [Parameter(Mandatory = $true)]
-        [string]$Url,
-        [bool]$CheckMode
-    )
-    # Legacy doesn't natively support deprecate by date, need to do this manually until we use Ansible.Basic
-    if (-not $result.ContainsKey('deprecations')) {
-        $result.deprecations = @()
-    }
-    $msg = -join @(
-        "Adding a repo with this module is deprecated, the repository parameter should only be used to select a repo. "
-        "Use community.windows.win_psrepository to manage repos"
-    )
-    $result.deprecations += @{
-        msg = $msg
-        date = "2021-07-01"
-        collection_name = "community.windows"
-    }
-    # Install NuGet provider if needed.
-    Install-NugetProvider -CheckMode $CheckMode
-
-    $Repos = (Get-PSRepository).SourceLocation
-
-    # If repository isn't already present, try to register it as trusted.
-    if ($Repos -notcontains $Url) {
-        try {
-            if ( -not ($CheckMode) ) {
-                Register-PSRepository -Name $Name -SourceLocation $Url -InstallationPolicy Trusted -ErrorAction Stop
-            }
-            $result.changed = $true
-            $result.repository_changed = $true
-        }
-        catch {
-            $ErrorMessage = "Problems registering $($Name) repository: $($_.Exception.Message)"
-            Fail-Json $result $ErrorMessage
-        }
-    }
-}
-
-Function Remove-Repository {
-    Param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name,
-        [bool]$CheckMode
-    )
-    # Legacy doesn't natively support deprecate by date, need to do this manually until we use Ansible.Basic
-    if (-not $result.ContainsKey('deprecations')) {
-        $result.deprecations = @()
-    }
-    $result.deprecations += @{
-        msg = "Removing a repo with this module is deprecated, use community.windows.win_psrepository to manage repos"
-        date = "2021-07-01"
-        collection_name = "community.windows"
-    }
-
-    $Repo = (Get-PSRepository).Name
-
-    # Try to remove the repository
-    if ($Repo -contains $Name) {
-        try {
-            if ( -not ($CheckMode) ) {
-                Unregister-PSRepository -Name $Name -ErrorAction Stop
-            }
-            $result.changed = $true
-            $result.repository_changed = $true
-        }
-        catch [ System.Exception ] {
-            $ErrorMessage = "Problems unregistering $($Name)repository: $($_.Exception.Message)"
-            Fail-Json $result $ErrorMessage
-        }
-    }
-}
-
 # Check PowerShell version, fail if < 5.0 and required modules are not installed
 $PsVersion = $PSVersionTable.PSVersion
 if ($PsVersion.Major -lt 5 ) {
@@ -459,7 +396,7 @@ if ( ($state -eq "latest") -and
     Fail-Json $result $ErrorMessage
 }
 
-if ( $repo -and (-not $url) ) {
+if ( $repo ) {
     $RepositoryExists = Get-PSRepository -Name $repo -ErrorAction SilentlyContinue
     if ( $null -eq $RepositoryExists) {
         $ErrorMessage = "The repository $repo doesn't exist."
@@ -484,13 +421,6 @@ if ( ($allow_clobber -or $allow_prerelease -or $skip_publisher_check -or
 Import-Module -Name PackageManagement, PowerShellGet -Force
 
 if ($state -eq "present") {
-    if (($repo) -and ($url)) {
-        Install-Repository -Name $repo -Url $url -CheckMode $check_mode
-    }
-    else {
-        $ErrorMessage = "Repository Name and Url are mandatory if you want to add a new repository"
-    }
-
     if ($name) {
         $ht = @{
             Name = $name
@@ -504,15 +434,12 @@ if ($state -eq "present") {
             CheckMode = $check_mode
             Credential = $repo_credential
             AcceptLicense = $accept_license
+            Force = $force
         }
         Install-PsModule @ht
     }
 }
 elseif ($state -eq "absent") {
-    if ($repo) {
-        Remove-Repository -Name $repo -CheckMode $check_mode
-    }
-
     if ($name) {
         $ht = @{
             Name = $Name
@@ -538,7 +465,7 @@ elseif ( $state -eq "latest") {
 
     $ExistingModule = Get-PsModule $Name
 
-    if ( $LatestVersion.Version -ne $ExistingModule.Version ) {
+    if ( ($LatestVersion.Version -ne $ExistingModule.Version) -or $force ) {
 
         $ht = @{
             Name = $Name
@@ -550,6 +477,7 @@ elseif ( $state -eq "latest") {
             CheckMode = $check_mode
             Credential = $repo_credential
             AcceptLicense = $accept_license
+            Force = $force
         }
         Install-PsModule @ht
     }
